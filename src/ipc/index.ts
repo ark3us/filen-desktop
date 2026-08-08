@@ -938,6 +938,10 @@ export class IPC {
 			await this.desktop.worker.invoke("syncUpdateRequireConfirmationOnLargeDeletions", params)
 		})
 
+		ipcMain.handle("syncUpdateLargeDeletionThreshold", async (_, params) => {
+			await this.desktop.worker.invoke("syncUpdateLargeDeletionThreshold", params)
+		})
+
 		ipcMain.handle("syncFetchIgnorerContent", async (_, params) => {
 			return await this.desktop.worker.invoke("syncFetchIgnorerContent", params)
 		})

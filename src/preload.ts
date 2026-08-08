@@ -93,6 +93,11 @@ export type DesktopAPI = {
 	syncFetchIgnorerContent: (params: { uuid: string }) => Promise<string>
 	syncUpdateIgnorerContent: (params: { uuid: string; content: string }) => Promise<void>
 	syncUpdateRequireConfirmationOnLargeDeletions: (params: { uuid: string; requireConfirmationOnLargeDeletions: boolean }) => Promise<void>
+	/**
+	 * Absolute number of deletions at which the confirmation prompt fires. Pass undefined to restore the
+	 * default (prompt only when the entire previously-synced tree would be deleted).
+	 */
+	syncUpdateLargeDeletionThreshold: (params: { uuid: string; largeDeletionThreshold?: number }) => Promise<void>
 	syncToggleLocalTrash: (params: { uuid: string; enabled: boolean }) => Promise<void>
 	updateNotificationCount: (count: number) => Promise<void>
 	updateErrorCount: (count: number) => Promise<void>
@@ -234,6 +239,7 @@ if ((env.isBrowser || env.isElectron) && onTrustedOrigin) {
 		setMinimizeToTray: minimizeToTray => ipcRenderer.invoke("setMinimizeToTray", minimizeToTray),
 		setStartMinimized: startMinimized => ipcRenderer.invoke("setStartMinimized", startMinimized),
 		syncUpdateConfirmDeletion: params => ipcRenderer.invoke("syncUpdateConfirmDeletion", params),
-		syncUpdateRequireConfirmationOnLargeDeletions: params => ipcRenderer.invoke("syncUpdateRequireConfirmationOnLargeDeletions", params)
+		syncUpdateRequireConfirmationOnLargeDeletions: params => ipcRenderer.invoke("syncUpdateRequireConfirmationOnLargeDeletions", params),
+		syncUpdateLargeDeletionThreshold: params => ipcRenderer.invoke("syncUpdateLargeDeletionThreshold", params)
 	} satisfies DesktopAPI)
 }
