@@ -939,6 +939,8 @@ export class IPC {
 		})
 
 		ipcMain.handle("syncUpdateLargeDeletionThreshold", async (_, params) => {
+			// Applied live so the change holds from the next cycle. Persistence rides on the pair itself: the
+			// renderer stores the whole config (syncPairs included) and pushes it back on every start.
 			await this.desktop.worker.invoke("syncUpdateLargeDeletionThreshold", params)
 		})
 
