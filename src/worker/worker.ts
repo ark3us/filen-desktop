@@ -269,7 +269,14 @@ export class Worker {
 								message.data.data.requireConfirmationOnLargeDeletions ??
 								message.data.data.requireConfirmationOnLargeDeletion
 
-							this.sync.sync.updateRequireConfirmationOnLargeDeletion(uuid, requireConfirmationOnLargeDeletion === true)
+							// Only an explicit boolean is honored. `=== true` would have coerced any other truthy
+							// shape (1, "true" after a JSON round-trip) to false, i.e. malformed input would turn
+							// the safety gate OFF while the UI toggle still showed it on. Ignoring the call instead
+							// leaves the gate as it was — the same fail-safe direction as the engine's threshold
+							// normalization.
+							if (typeof requireConfirmationOnLargeDeletion === "boolean") {
+								this.sync.sync.updateRequireConfirmationOnLargeDeletion(uuid, requireConfirmationOnLargeDeletion)
+							}
 						}
 
 						this.invokeResponse(message.data.id, message.data.channel)
