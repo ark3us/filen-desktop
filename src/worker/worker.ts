@@ -260,9 +260,37 @@ export class Worker {
 				} else if (message.data.channel === "syncUpdateRequireConfirmationOnLargeDeletions") {
 					try {
 						if (this.sync.active && this.sync.sync) {
-							const { uuid, requireConfirmationOnLargeDeletion } = message.data.data
+							// The renderer API declares the flag PLURAL (see preload.ts) while this handler always
+							// read it singular — so the toggle silently passed `undefined` and DISABLED the deletion
+							// gate until the next setConfig re-forced it on. Accept either spelling rather than
+							// renaming the public API out from under an already-shipped UI.
+							const { uuid } = message.data.data
+							const requireConfirmationOnLargeDeletion =
+								message.data.data.requireConfirmationOnLargeDeletions ??
+								message.data.data.requireConfirmationOnLargeDeletion
 
-							this.sync.sync.updateRequireConfirmationOnLargeDeletion(uuid, requireConfirmationOnLargeDeletion)
+							// Only an explicit boolean is honored. `=== true` would have coerced any other truthy
+							// shape (1, "true" after a JSON round-trip) to false, i.e. malformed input would turn
+							// the safety gate OFF while the UI toggle still showed it on. Ignoring the call instead
+							// leaves the gate as it was — the same fail-safe direction as the engine's threshold
+							// normalization.
+							if (typeof requireConfirmationOnLargeDeletion === "boolean") {
+								this.sync.sync.updateRequireConfirmationOnLargeDeletion(uuid, requireConfirmationOnLargeDeletion)
+							}
+						}
+
+						this.invokeResponse(message.data.id, message.data.channel)
+					} catch (e) {
+						this.invokeError(message.data.id, message.data.channel, e instanceof Error ? e : new Error(JSON.stringify(e)))
+					}
+				} else if (message.data.channel === "syncUpdateLargeDeletionThreshold") {
+					try {
+						if (this.sync.active && this.sync.sync) {
+							const { uuid, largeDeletionThreshold } = message.data.data
+
+							// The engine validates the value (whole number >= 1, otherwise back to the default
+							// "whole tree wiped" rule), so nothing to check here.
+							this.sync.sync.updateLargeDeletionThreshold(uuid, largeDeletionThreshold)
 						}
 
 						this.invokeResponse(message.data.id, message.data.channel)
