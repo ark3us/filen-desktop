@@ -232,9 +232,14 @@ export class IPC {
 				syncConfig: {
 					...config.syncConfig,
 					dbPath: pathModule.join(app.getPath("userData"), "sync"),
+					// Default ON, but only as a DEFAULT. This used to be a hard `true`, which made the setting
+					// unturnoffable: the UI wrote false and the very next config save put it back. Yet a bare
+					// removal is not the fix either — the engine falls back to FALSE for a missing field
+					// (Sync's constructor), so pairs created before this field existed would silently lose the
+					// gate. `?? true` keeps an explicit choice (including false) and protects everything else.
 					syncPairs: config.syncConfig.syncPairs.map(pair => ({
 						...pair,
-						requireConfirmationOnLargeDeletion: true
+						requireConfirmationOnLargeDeletion: pair.requireConfirmationOnLargeDeletion ?? true
 					}))
 				}
 			}
