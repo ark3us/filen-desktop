@@ -1,11 +1,13 @@
 import { Worker as WorkerThread } from "worker_threads"
 import pathModule from "path"
 import { deserializeError } from "../utils"
-import { app } from "electron"
+import { app, Notification } from "electron"
 import type FilenDesktop from ".."
 import isDev from "../isDev"
 import { type WorkerInvokeChannel, type WorkerMessage } from "../types"
 import { Semaphore } from "../semaphore"
+import { type SyncMessage } from "@filen/sync/dist/types"
+import { getAppIcon } from "../assets"
 
 export class Worker {
 	private worker: WorkerThread | null = null
@@ -17,6 +19,8 @@ export class Worker {
 	public active: boolean = false
 	private readonly startMutex = new Semaphore(1)
 	private readonly stopMutex = new Semaphore(1)
+	// What each pair's outstanding deletion prompt says, for the pairs we have already notified about.
+	private readonly notifiedDeletions: Record<string, string> = {}
 
 	public constructor(desktop: FilenDesktop) {
 		this.desktop = desktop
@@ -138,6 +142,8 @@ export class Worker {
 							delete this.invokes[message.data.id]
 						}
 					} else if (message.type === "sync") {
+						this.notifyConfirmDeletion(message.data)
+
 						this.desktop.ipc.postMainToWindowMessage({
 							type: "sync",
 							message: message.data
@@ -150,6 +156,70 @@ export class Worker {
 		} finally {
 			this.startMutex.release()
 		}
+	}
+
+	/**
+	 * Raise a desktop notification when a sync pair is waiting on a large-deletion decision.
+	 *
+	 * This lives in the main process on purpose: the in-app warning bar only exists while the window does, and
+	 * the window is routinely closed to the tray while sync keeps running. A deletion the user never sees the
+	 * question for is a deletion that either never happens or happens unnoticed — both bad.
+	 *
+	 * The engine re-posts an unanswered prompt on EVERY cycle (~5s) so the renderer's bar survives, so one
+	 * notification per message would be a notification every 5 seconds. One is raised per DISTINCT pending
+	 * decision instead: keyed by pair, valued by what the prompt says. A changed value means the deletion set
+	 * itself changed, which the user has to be asked about again anyway.
+	 */
+	private notifyConfirmDeletion(message: SyncMessage): void {
+		// The engine suppresses cycleSuccess while a decision is outstanding, so receiving it means this pair
+		// has nothing pending any more — forget it, or a later identical prompt would be swallowed as a repost.
+		// cycleExited fires when the pair is removed or torn down; forgetting it there keeps this from holding a
+		// fingerprint for a pair that no longer exists.
+		if (message.type === "cycleSuccess" || message.type === "cycleExited") {
+			delete this.notifiedDeletions[message.syncPair.uuid]
+
+			return
+		}
+
+		if (message.type !== "confirmDeletion") {
+			return
+		}
+
+		const fingerprint = `${message.data.where}:${message.data.count}`
+
+		if (this.notifiedDeletions[message.syncPair.uuid] === fingerprint) {
+			return
+		}
+
+		this.notifiedDeletions[message.syncPair.uuid] = fingerprint
+
+		// Marked notified even when we cannot show anything, so a headless/unsupported desktop does not retry
+		// every cycle forever. The in-app bar and the tray warning icon still carry the state.
+		if (!Notification.isSupported()) {
+			return
+		}
+
+		const where =
+			message.data.where === "local"
+				? "in the cloud"
+				: message.data.where === "remote"
+				? "on this computer"
+				: "on both sides"
+
+		const notification = new Notification({
+			title: "Filen: confirm a large deletion",
+			body: `"${message.syncPair.name}" wants to delete ${message.data.count} item(s) ${where}. Nothing is deleted until you decide.`,
+			// Linux only: stay on screen until dismissed instead of fading after a few seconds. The whole point is
+			// that this must not be missed. Ignored on Windows/macOS.
+			urgency: "critical",
+			icon: getAppIcon()
+		})
+
+		notification.on("click", () => {
+			this.desktop.showOrOpenDriveWindow()
+		})
+
+		notification.show()
 	}
 
 	public async stop(): Promise<void> {
