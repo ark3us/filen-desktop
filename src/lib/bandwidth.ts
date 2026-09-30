@@ -294,72 +294,79 @@ export function throttleAgent(agent: https.Agent, up: TokenBucket, down: TokenBu
 	}
 }
 
-// The SDK's upload chunk size (constants.UPLOAD_CHUNK_SIZE).
-const UPLOAD_CHUNK_BYTES = 1024 * 1024
-// How long an active chunk should take at the limit. Short, because the UI counts a chunk as sent the moment it starts and
-// only sees it finish at the end: a few seconds keeps its progress close to the truth and moving at a steady pace.
+// How much upload data may be in flight under a limit, in seconds at that rate. Short, because the UI counts a chunk as
+// sent the moment it starts and only sees it finish at the end: a few seconds keeps its progress close to the truth and
+// moving at a steady pace.
 const CHUNK_SECONDS = 4
-// The SDK's own ceiling on parallel requests (APIClient.requestSemaphore).
-const MAX_CHUNK_SLOTS = 32
 
 /**
- * A semaphore whose capacity can change at any time; 0 means no limit. A lower capacity lets running work finish and
- * holds back new work until the count drops below it.
+ * Admits work while the bytes in flight stay within a budget that can change at any time; 0 means no limit. Budgeting
+ * bytes rather than counting chunks matters for small files: their chunks are tiny and bound by the server's response
+ * time, so a handful at a time would crawl far below the limit. One chunk is always admitted when nothing is in flight, so
+ * a budget smaller than a chunk still makes progress. Admission is first come first served.
  *
  * @export
  * @class ChunkGate
  */
 export class ChunkGate {
-	private capacity: number = 0
+	private budget: number = 0
+	private inFlight: number = 0
 	private active: number = 0
-	private readonly queue: (() => void)[] = []
+	private readonly queue: { bytes: number; resolve: () => void }[] = []
 
-	public setCapacity(capacity: number): void {
-		this.capacity = capacity
+	public setBudget(bytes: number): void {
+		this.budget = bytes
 
 		this.pump()
 	}
 
-	public async run<T>(work: () => Promise<T>): Promise<T> {
-		if (this.capacity === 0 || this.active < this.capacity) {
-			this.active++
+	public async run<T>(bytes: number, work: () => Promise<T>): Promise<T> {
+		if (this.queue.length === 0 && this.fits(bytes)) {
+			this.admit(bytes)
 		} else {
-			await new Promise<void>(resolve => this.queue.push(resolve))
+			await new Promise<void>(resolve => this.queue.push({ bytes, resolve }))
 		}
 
 		try {
 			return await work()
 		} finally {
 			this.active--
+			this.inFlight -= bytes
 
 			this.pump()
 		}
 	}
 
-	private pump(): void {
-		while (this.queue.length > 0 && (this.capacity === 0 || this.active < this.capacity)) {
-			this.active++
+	private fits(bytes: number): boolean {
+		return this.budget === 0 || this.active === 0 || this.inFlight + bytes <= this.budget
+	}
 
-			this.queue.shift()!()
+	private admit(bytes: number): void {
+		this.active++
+		this.inFlight += bytes
+	}
+
+	private pump(): void {
+		while (this.queue.length > 0 && this.fits(this.queue[0]!.bytes)) {
+			const next = this.queue.shift()!
+
+			this.admit(next.bytes)
+			next.resolve()
 		}
 	}
 }
 
 /**
- * How many upload chunks may be in flight under a limit: as many as finish in about {@link CHUNK_SECONDS} at that rate. Sync
- * starts up to 32 at once, and sharing a low limit between all of them makes every chunk take minutes and finish together,
- * so progress stalls and then jumps. 0 (unlimited) means no gate.
+ * The upload bytes allowed in flight under a limit: about {@link CHUNK_SECONDS} worth at that rate. Sync starts up to 32
+ * chunks at once, and sharing a low limit between all of them makes every chunk take minutes and finish together, so
+ * progress stalls and then jumps. 0 (unlimited) means no gate.
  *
  * @export
  * @param {number} bytesPerSecond
  * @returns {number}
  */
-export function uploadChunkSlots(bytesPerSecond: number): number {
-	if (bytesPerSecond <= 0) {
-		return 0
-	}
-
-	return Math.min(MAX_CHUNK_SLOTS, Math.max(1, Math.round((CHUNK_SECONDS * bytesPerSecond) / UPLOAD_CHUNK_BYTES)))
+export function uploadChunkBudget(bytesPerSecond: number): number {
+	return bytesPerSecond > 0 ? CHUNK_SECONDS * bytesPerSecond : 0
 }
 
 type ChunkUploader = { uploadChunkBuffer: (...args: unknown[]) => Promise<unknown> }
@@ -385,7 +392,10 @@ export function gateChunkUploads(uploader: ChunkUploader, gate: ChunkGate): void
 	const uploadChunkBuffer = uploader.uploadChunkBuffer
 
 	uploader.uploadChunkBuffer = function (this: unknown, ...args: unknown[]) {
-		return gate.run(() => uploadChunkBuffer.apply(this, args))
+		// The SDK passes the encrypted chunk as { buffer }. An unknown size counts as 0, so it is never held back.
+		const bytes = (args[0] as { buffer?: { byteLength?: number } } | undefined)?.buffer?.byteLength ?? 0
+
+		return gate.run(bytes, () => uploadChunkBuffer.apply(this, args))
 	}
 }
 
@@ -469,7 +479,7 @@ export function setBandwidthLimits(limits?: BandwidthLimits): void {
 	const uploadBytesPerSecond = mbpsToBytesPerSecond(limits?.uploadMbps)
 
 	upload.setRate(uploadBytesPerSecond)
-	uploadChunks.setCapacity(uploadChunkSlots(uploadBytesPerSecond))
+	uploadChunks.setBudget(uploadChunkBudget(uploadBytesPerSecond))
 	download.setRate(mbpsToBytesPerSecond(limits?.downloadMbps))
 }
 

@@ -13,7 +13,7 @@ import {
 	installBandwidthLimiter,
 	mbpsToBytesPerSecond,
 	toRcloneRate,
-	uploadChunkSlots
+	uploadChunkBudget
 } from "../src/lib/bandwidth"
 
 const KiB = 1024
@@ -242,21 +242,19 @@ test("unlimited is a passthrough", async () => {
 	agent.destroy()
 })
 
-test("sizes the upload gate so a chunk takes about 4 s at the limit", () => {
-	assert.equal(uploadChunkSlots(0), 0)
-	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1)), 1)
-	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1.5)), 1)
-	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(12)), 6)
-	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1000)), 32)
+test("budgets about 4 s of upload data in flight at the limit", () => {
+	assert.equal(uploadChunkBudget(0), 0)
+	assert.equal(uploadChunkBudget(mbpsToBytesPerSecond(12)), 6000000)
 })
 
-test("the gate caps concurrent work and follows capacity changes", async () => {
-	const gate = new ChunkGate()
+function gatedWork(gate: ChunkGate) {
 	const releases: (() => void)[] = []
 	let running = 0
 	let peak = 0
-	const work = () =>
+
+	const work = (bytes: number) =>
 		gate.run(
+			bytes,
 			() =>
 				new Promise<void>(resolve => {
 					running++
@@ -267,43 +265,80 @@ test("the gate caps concurrent work and follows capacity changes", async () => {
 					})
 				})
 		)
-	const tick = () => new Promise(resolve => setImmediate(resolve))
 
-	gate.setCapacity(2)
+	return {
+		work,
+		running: () => running,
+		peak: () => peak,
+		releaseAll: () => releases.splice(0).forEach(release => release())
+	}
+}
 
-	const all = Promise.all(Array.from({ length: 6 }, work))
+const tick = () => new Promise(resolve => setImmediate(resolve))
+
+test("the gate holds bytes in flight within the budget and follows budget changes", async () => {
+	const gate = new ChunkGate()
+	const tasks = gatedWork(gate)
+
+	gate.setBudget(200)
+
+	const all = Promise.all(Array.from({ length: 6 }, () => tasks.work(100)))
 
 	await tick()
-	assert.equal(running, 2)
+	assert.equal(tasks.running(), 2)
 
-	gate.setCapacity(4)
+	gate.setBudget(400)
 	await tick()
-	assert.equal(running, 4)
+	assert.equal(tasks.running(), 4)
 
-	gate.setCapacity(0)
+	gate.setBudget(0)
 	await tick()
-	assert.equal(running, 6)
+	assert.equal(tasks.running(), 6)
 
-	releases.forEach(release => release())
+	tasks.releaseAll()
 	await all
+})
 
-	assert.equal(peak, 6)
+test("the gate lets many small chunks through together, and one oversized chunk on its own", async () => {
+	const gate = new ChunkGate()
+	const tasks = gatedWork(gate)
+
+	gate.setBudget(1000)
+
+	const small = Promise.all(Array.from({ length: 16 }, () => tasks.work(10)))
+
+	await tick()
+	assert.equal(tasks.running(), 16)
+
+	tasks.releaseAll()
+	await small
+
+	const big = tasks.work(5000)
+
+	await tick()
+	assert.equal(tasks.running(), 1)
+
+	tasks.releaseAll()
+	await big
 })
 
 test("with the gate, chunks finish one after another instead of all together at the end", async () => {
 	const { agent } = throttled(256 * KiB, 0)
 	const gate = new ChunkGate()
 	const uploader = {
-		uploadChunkBuffer: async (...args: unknown[]) => await post(agent, args[0] as number)
+		uploadChunkBuffer: async (...args: unknown[]) => await post(agent, (args[0] as { buffer: Buffer }).buffer.byteLength)
 	}
 
-	gate.setCapacity(uploadChunkSlots(256 * KiB))
+	// One 128 KiB chunk in flight at a time.
+	gate.setBudget(128 * KiB)
 	gateChunkUploads(uploader, gate)
 
 	const start = performance.now()
 	// 8 x 128 KiB at 256 KiB/s. Shared by all 8 at once, every chunk would finish at ~3.75 s.
 	const finished = (
-		await Promise.all(Array.from({ length: 8 }, () => uploader.uploadChunkBuffer(128 * KiB).then(() => seconds(start))))
+		await Promise.all(
+			Array.from({ length: 8 }, () => uploader.uploadChunkBuffer({ buffer: Buffer.alloc(128 * KiB) }).then(() => seconds(start)))
+		)
 	).sort()
 
 	assert.ok(finished[0]! < 1, `first chunk finished at ${finished[0]} s`)
