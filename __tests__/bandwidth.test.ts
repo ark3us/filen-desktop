@@ -5,7 +5,16 @@ import { type AddressInfo } from "net"
 import { Readable } from "stream"
 import { HttpsAgent } from "agentkeepalive"
 import { generate } from "selfsigned"
-import { TokenBucket, throttleAgent, installBandwidthLimiter, mbpsToBytesPerSecond, toRcloneRate } from "../src/lib/bandwidth"
+import {
+	TokenBucket,
+	ChunkGate,
+	throttleAgent,
+	gateChunkUploads,
+	installBandwidthLimiter,
+	mbpsToBytesPerSecond,
+	toRcloneRate,
+	uploadChunkSlots
+} from "../src/lib/bandwidth"
 
 const KiB = 1024
 
@@ -233,11 +242,87 @@ test("unlimited is a passthrough", async () => {
 	agent.destroy()
 })
 
-test("installBandwidthLimiter patches the SDK's shared agent", () => {
+test("sizes the upload gate so a chunk takes about 4 s at the limit", () => {
+	assert.equal(uploadChunkSlots(0), 0)
+	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1)), 1)
+	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1.5)), 1)
+	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(12)), 6)
+	assert.equal(uploadChunkSlots(mbpsToBytesPerSecond(1000)), 32)
+})
+
+test("the gate caps concurrent work and follows capacity changes", async () => {
+	const gate = new ChunkGate()
+	const releases: (() => void)[] = []
+	let running = 0
+	let peak = 0
+	const work = () =>
+		gate.run(
+			() =>
+				new Promise<void>(resolve => {
+					running++
+					peak = Math.max(peak, running)
+					releases.push(() => {
+						running--
+						resolve()
+					})
+				})
+		)
+	const tick = () => new Promise(resolve => setImmediate(resolve))
+
+	gate.setCapacity(2)
+
+	const all = Promise.all(Array.from({ length: 6 }, work))
+
+	await tick()
+	assert.equal(running, 2)
+
+	gate.setCapacity(4)
+	await tick()
+	assert.equal(running, 4)
+
+	gate.setCapacity(0)
+	await tick()
+	assert.equal(running, 6)
+
+	releases.forEach(release => release())
+	await all
+
+	assert.equal(peak, 6)
+})
+
+test("with the gate, chunks finish one after another instead of all together at the end", async () => {
+	const { agent } = throttled(256 * KiB, 0)
+	const gate = new ChunkGate()
+	const uploader = {
+		uploadChunkBuffer: async (...args: unknown[]) => await post(agent, args[0] as number)
+	}
+
+	gate.setCapacity(uploadChunkSlots(256 * KiB))
+	gateChunkUploads(uploader, gate)
+
+	const start = performance.now()
+	// 8 x 128 KiB at 256 KiB/s. Shared by all 8 at once, every chunk would finish at ~3.75 s.
+	const finished = (
+		await Promise.all(Array.from({ length: 8 }, () => uploader.uploadChunkBuffer(128 * KiB).then(() => seconds(start))))
+	).sort()
+
+	assert.ok(finished[0]! < 1, `first chunk finished at ${finished[0]} s`)
+	assert.ok(finished[3]! < 2.5, `fourth chunk finished at ${finished[3]} s`)
+	assert.ok(finished[7]! < 5, `took ${finished[7]} s`)
+
+	agent.destroy()
+})
+
+test("installBandwidthLimiter hooks the SDK's shared agent and chunk uploads", () => {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const { keepAliveAgent } = require("@filen/sdk/dist/node/api/client") as { keepAliveAgent: https.Agent }
-	const before = keepAliveAgent.createConnection
+	const { keepAliveAgent, APIClient } = require("@filen/sdk/dist/node/api/client") as {
+		keepAliveAgent: https.Agent
+		APIClient: { prototype: { uploadChunkBuffer: unknown } }
+	}
+	const createConnection = keepAliveAgent.createConnection
+	const uploadChunkBuffer = APIClient.prototype.uploadChunkBuffer
 
 	assert.equal(installBandwidthLimiter(), true)
-	assert.notEqual(keepAliveAgent.createConnection, before)
+	assert.notEqual(keepAliveAgent.createConnection, createConnection)
+	assert.notEqual(APIClient.prototype.uploadChunkBuffer, uploadChunkBuffer)
 })

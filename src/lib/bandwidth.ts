@@ -294,15 +294,116 @@ export function throttleAgent(agent: https.Agent, up: TokenBucket, down: TokenBu
 	}
 }
 
-const upload = new TokenBucket()
-const download = new TokenBucket()
+// The SDK's upload chunk size (constants.UPLOAD_CHUNK_SIZE).
+const UPLOAD_CHUNK_BYTES = 1024 * 1024
+// How long an active chunk should take at the limit. Short, because the UI counts a chunk as sent the moment it starts and
+// only sees it finish at the end: a few seconds keeps its progress close to the truth and moving at a steady pace.
+const CHUNK_SECONDS = 4
+// The SDK's own ceiling on parallel requests (APIClient.requestSemaphore).
+const MAX_CHUNK_SLOTS = 32
 
 /**
- * The SDK's shared https agents in this JS realm (the main process and the worker thread each have their own). @filen/sync
- * normally resolves the same copy of the SDK as the desktop; if a version drift ever gives it a nested copy, that copy has an
- * agent of its own, which must be throttled too or sync would slip past the limit.
+ * A semaphore whose capacity can change at any time; 0 means no limit. A lower capacity lets running work finish and
+ * holds back new work until the count drops below it.
+ *
+ * @export
+ * @class ChunkGate
  */
-function sdkAgents(): https.Agent[] {
+export class ChunkGate {
+	private capacity: number = 0
+	private active: number = 0
+	private readonly queue: (() => void)[] = []
+
+	public setCapacity(capacity: number): void {
+		this.capacity = capacity
+
+		this.pump()
+	}
+
+	public async run<T>(work: () => Promise<T>): Promise<T> {
+		if (this.capacity === 0 || this.active < this.capacity) {
+			this.active++
+		} else {
+			await new Promise<void>(resolve => this.queue.push(resolve))
+		}
+
+		try {
+			return await work()
+		} finally {
+			this.active--
+
+			this.pump()
+		}
+	}
+
+	private pump(): void {
+		while (this.queue.length > 0 && (this.capacity === 0 || this.active < this.capacity)) {
+			this.active++
+
+			this.queue.shift()!()
+		}
+	}
+}
+
+/**
+ * How many upload chunks may be in flight under a limit: as many as finish in about {@link CHUNK_SECONDS} at that rate. Sync
+ * starts up to 32 at once, and sharing a low limit between all of them makes every chunk take minutes and finish together,
+ * so progress stalls and then jumps. 0 (unlimited) means no gate.
+ *
+ * @export
+ * @param {number} bytesPerSecond
+ * @returns {number}
+ */
+export function uploadChunkSlots(bytesPerSecond: number): number {
+	if (bytesPerSecond <= 0) {
+		return 0
+	}
+
+	return Math.min(MAX_CHUNK_SLOTS, Math.max(1, Math.round((CHUNK_SECONDS * bytesPerSecond) / UPLOAD_CHUNK_BYTES)))
+}
+
+type ChunkUploader = { uploadChunkBuffer: (...args: unknown[]) => Promise<unknown> }
+
+const gatedUploaders = new WeakSet<ChunkUploader>()
+
+/**
+ * Route every chunk upload of an SDK API client through a {@link ChunkGate}. A chunk waiting at the gate has not started its
+ * request yet, so it holds no connection (no server timeout can hit it) and the SDK has not reported it as progress. Applied
+ * to the prototype so every client instance is covered. Idempotent.
+ *
+ * @export
+ * @param {ChunkUploader} uploader
+ * @param {ChunkGate} gate
+ */
+export function gateChunkUploads(uploader: ChunkUploader, gate: ChunkGate): void {
+	if (gatedUploaders.has(uploader)) {
+		return
+	}
+
+	gatedUploaders.add(uploader)
+
+	const uploadChunkBuffer = uploader.uploadChunkBuffer
+
+	uploader.uploadChunkBuffer = function (this: unknown, ...args: unknown[]) {
+		return gate.run(() => uploadChunkBuffer.apply(this, args))
+	}
+}
+
+const upload = new TokenBucket()
+const download = new TokenBucket()
+const uploadChunks = new ChunkGate()
+
+type SDKClientModule = {
+	keepAliveAgent: https.Agent
+	APIClient: { prototype: ChunkUploader }
+}
+
+/**
+ * The SDK's API client module(s) in this JS realm (the main process and the worker thread each have their own). @filen/sync
+ * normally resolves the same copy of the SDK as the desktop; if a version drift ever gives it a nested copy, that copy has an
+ * agent and a client of its own, which must be hooked too or sync would slip past the limit.
+ */
+function sdkClientModules(): SDKClientModule[] {
 	const entry = "@filen/sdk/dist/node/api/client"
 	const paths = new Set<string>([require.resolve(entry)])
 
@@ -313,7 +414,7 @@ function sdkAgents(): https.Agent[] {
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	return [...paths].map(path => (require(path) as { keepAliveAgent: https.Agent }).keepAliveAgent)
+	return [...paths].map(path => require(path) as SDKClientModule)
 }
 
 /**
@@ -327,12 +428,13 @@ function sdkAgents(): https.Agent[] {
  * throwing: the app keeps working unthrottled, which beats not starting at all.
  *
  * @export
- * @returns {boolean} Whether the SDK's agents are now throttled.
+ * @returns {boolean} Whether the SDK's connections and chunk uploads are now hooked.
  */
 export function installBandwidthLimiter(): boolean {
 	try {
-		for (const agent of sdkAgents()) {
-			throttleAgent(agent, upload, download)
+		for (const sdk of sdkClientModules()) {
+			throttleAgent(sdk.keepAliveAgent, upload, download)
+			gateChunkUploads(sdk.APIClient.prototype, uploadChunks)
 		}
 
 		return true
@@ -364,7 +466,10 @@ export function mbpsToBytesPerSecond(mbps?: number): number {
  * @param {BandwidthLimits} [limits]
  */
 export function setBandwidthLimits(limits?: BandwidthLimits): void {
-	upload.setRate(mbpsToBytesPerSecond(limits?.uploadMbps))
+	const uploadBytesPerSecond = mbpsToBytesPerSecond(limits?.uploadMbps)
+
+	upload.setRate(uploadBytesPerSecond)
+	uploadChunks.setCapacity(uploadChunkSlots(uploadBytesPerSecond))
 	download.setRate(mbpsToBytesPerSecond(limits?.downloadMbps))
 }
 
