@@ -76,7 +76,6 @@ export class RcloneManager {
 	private readonly portMutex = new Semaphore(1)
 
 	private config: FilenDesktopConfig | null = null
-	private bandwidthLimits: BandwidthLimits | undefined = undefined
 	private binaryPromise: Promise<string> | null = null
 
 	private networkDrive: NetworkDrive | null = null
@@ -186,7 +185,9 @@ export class RcloneManager {
 	}
 
 	/**
-	 * Store the bandwidth limits and apply them to every running role. A role started later gets them right after its start.
+	 * Apply the bandwidth limits to every rclone role. Roles spawned from now on read them from `RCLONE_BWLIMIT`, which rclone
+	 * treats like `--bwlimit`, so they are throttled from their first byte; running roles get them through rc. Never throws: a
+	 * running role that cannot take the change keeps its previous limit, which is logged.
 	 *
 	 * @public
 	 * @async
@@ -194,30 +195,20 @@ export class RcloneManager {
 	 * @returns {Promise<void>}
 	 */
 	public async setBandwidthLimits(limits?: BandwidthLimits): Promise<void> {
-		this.bandwidthLimits = limits
+		const rate = toRcloneRate(limits)
 
-		await Promise.all([this.networkDrive, this.s3, this.webdav].map(role => this.applyBandwidthLimit(role)))
-	}
+		// RcloneProcess spawns with this process' environment, and nothing else here reads RCLONE_* variables.
+		process.env.RCLONE_BWLIMIT = rate
 
-	/**
-	 * Push the stored limits to one role. Never throws: a role that cannot take the limit keeps running unthrottled, which is
-	 * logged rather than failing its start.
-	 *
-	 * @private
-	 * @async
-	 * @param {({ setBandwidthLimit: (rate: string) => Promise<void> } | null)} role
-	 * @returns {Promise<void>}
-	 */
-	private async applyBandwidthLimit(role: { setBandwidthLimit: (rate: string) => Promise<void> } | null): Promise<void> {
-		if (!role) {
-			return
-		}
-
-		try {
-			await role.setBandwidthLimit(toRcloneRate(this.bandwidthLimits))
-		} catch (e) {
-			this.log("error", `Could not apply the bandwidth limit to rclone: ${e instanceof Error ? e.message : String(e)}`)
-		}
+		await Promise.all(
+			[this.networkDrive, this.s3, this.webdav].map(async role => {
+				try {
+					await role?.setBandwidthLimit(rate)
+				} catch (e) {
+					this.log("error", `Could not apply the bandwidth limit to rclone: ${e instanceof Error ? e.message : String(e)}`)
+				}
+			})
+		)
 	}
 
 	/**
@@ -560,7 +551,6 @@ export class RcloneManager {
 
 			try {
 				await role.start()
-				await this.applyBandwidthLimit(role)
 			} catch (e) {
 				await this.stopDriveLocked()
 
@@ -623,7 +613,6 @@ export class RcloneManager {
 
 			try {
 				await role.start()
-				await this.applyBandwidthLimit(role)
 			} catch (e) {
 				await this.stopS3Locked()
 
@@ -686,7 +675,6 @@ export class RcloneManager {
 
 			try {
 				await role.start()
-				await this.applyBandwidthLimit(role)
 			} catch (e) {
 				await this.stopWebdavLocked()
 

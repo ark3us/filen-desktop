@@ -490,15 +490,14 @@ export class IPC {
 		})
 
 		ipcMain.handle("setBandwidthLimits", async (_, limits: BandwidthLimits) => {
-			this.desktop.bandwidthLimits = limits
-
 			setBandwidthLimits(limits)
 
+			// Saved first: a worker that is still starting reads the saved limits once it is up.
+			await this.desktop.options.update({
+				bandwidthLimits: limits
+			})
+
 			await Promise.all([
-				this.desktop.options.update({
-					bandwidthLimits: limits
-				}),
-				// A worker that is not up yet takes the limits from workerData when it starts.
 				this.desktop.worker.active ? this.desktop.worker.invoke("setBandwidthLimits", limits) : Promise.resolve(),
 				this.desktop.rclone.setBandwidthLimits(limits)
 			])

@@ -1,4 +1,4 @@
-import { parentPort, isMainThread, workerData } from "worker_threads"
+import { parentPort, isMainThread } from "worker_threads"
 import { type FilenDesktopConfig, type WorkerMessage, type WorkerInvokeChannel, type BandwidthLimits } from "../types"
 import { serializeError, getLocalDirectorySize } from "../utils"
 import fs from "fs-extra"
@@ -30,8 +30,6 @@ export class Worker {
 		if (!installBandwidthLimiter()) {
 			this.logger.log("error", "Could not hook the SDK's connections: the bandwidth limit will not apply to sync")
 		}
-
-		setBandwidthLimits((workerData as { bandwidthLimits?: BandwidthLimits } | null)?.bandwidthLimits)
 	}
 
 	public async getSDKInstance(): Promise<FilenSDK> {

@@ -373,8 +373,8 @@ export class S3Server {
 	}
 
 	/**
-	 * Apply a bandwidth limit to the running rclone process via rc `core/bwlimit`. A no-op when not running: the manager
-	 * applies the current limit again right after every start.
+	 * Apply a bandwidth limit to the running rclone process via rc `core/bwlimit`. A no-op when not running: a new process
+	 * takes the current limit from the environment at spawn.
 	 *
 	 * @public
 	 * @async

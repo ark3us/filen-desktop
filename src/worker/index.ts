@@ -95,12 +95,7 @@ export class Worker {
 			await new Promise<void>((resolve, reject) => {
 				this.desktop.logger.log("info", "Starting worker")
 
-				// The worker is its own JS realm with its own SDK agent: it gets the limits at birth, then through invokes.
-				this.worker = new WorkerThread(pathModule.join(__dirname, !isDev ? "worker.js" : "worker.dev.js"), {
-					workerData: {
-						bandwidthLimits: this.desktop.bandwidthLimits
-					}
-				})
+				this.worker = new WorkerThread(pathModule.join(__dirname, !isDev ? "worker.js" : "worker.dev.js"))
 
 				this.worker.on("error", err => {
 					this.desktop.logger.log("error", err, "worker.onError")
@@ -158,6 +153,10 @@ export class Worker {
 			})
 
 			this.active = true
+
+			// The worker is its own JS realm with its own SDK agent. Sent on every (re)start, before anything else is asked of
+			// it, which also covers a limit change that arrived while it was starting (and was skipped as not active yet).
+			await this.invoke("setBandwidthLimits", (await this.desktop.options.get()).bandwidthLimits)
 		} finally {
 			this.startMutex.release()
 		}

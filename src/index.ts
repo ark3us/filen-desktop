@@ -18,7 +18,6 @@ import Status from "./lib/status"
 import Options from "./lib/options"
 import os from "os"
 import { installBandwidthLimiter, setBandwidthLimits } from "./lib/bandwidth"
-import { type BandwidthLimits } from "./types"
 
 if (IS_ELECTRON) {
 	// Needs to be here, otherwise Chromium's FileSystemAccess API won't work. Waiting for the electron team to fix it.
@@ -55,7 +54,6 @@ export class FilenDesktop {
 	public serve: (window: BrowserWindow) => Promise<void>
 	public windowState: WindowState
 	public minimizeToTray: boolean = false
-	public bandwidthLimits: BandwidthLimits | undefined = undefined
 	public status: Status
 	public options: Options
 	public shouldExitOnQuit: boolean = false
@@ -141,9 +139,7 @@ export class FilenDesktop {
 				this.logger.log("error", "Could not hook the SDK's connections: the bandwidth limit will not apply to the main process")
 			}
 
-			this.bandwidthLimits = options.bandwidthLimits
-
-			setBandwidthLimits(this.bandwidthLimits)
+			setBandwidthLimits(options.bandwidthLimits)
 
 			await app.whenReady()
 
@@ -237,7 +233,7 @@ export class FilenDesktop {
 			// pay the (first-run) extraction cost. Fire-and-forget: failures are logged and retried lazily on first use.
 			this.rclone.warmUpBinary().catch(() => {})
 
-			await this.rclone.setBandwidthLimits(this.bandwidthLimits)
+			await this.rclone.setBandwidthLimits(options.bandwidthLimits)
 
 			this.logger.log("info", "Starting worker and creating window")
 
