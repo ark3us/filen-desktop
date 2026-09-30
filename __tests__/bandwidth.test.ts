@@ -219,7 +219,6 @@ test("installBandwidthLimiter patches the SDK's shared agent", () => {
 	const { keepAliveAgent } = require("@filen/sdk/dist/node/api/client") as { keepAliveAgent: https.Agent }
 	const before = keepAliveAgent.createConnection
 
-	installBandwidthLimiter()
-
+	assert.equal(installBandwidthLimiter(), true)
 	assert.notEqual(keepAliveAgent.createConnection, before)
 })

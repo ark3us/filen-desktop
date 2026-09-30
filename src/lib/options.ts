@@ -2,12 +2,14 @@ import writeFileAtomic from "write-file-atomic"
 import fs from "fs-extra"
 import { app } from "electron"
 import pathModule from "path"
+import { type BandwidthLimits } from "../types"
 
 export const OPTIONS_VERSION = 1
 
 export type OptionsType = {
 	minimizeToTray?: boolean
 	startMinimized?: boolean
+	bandwidthLimits?: BandwidthLimits
 }
 
 export class Options {

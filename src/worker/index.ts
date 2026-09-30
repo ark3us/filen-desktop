@@ -95,7 +95,12 @@ export class Worker {
 			await new Promise<void>((resolve, reject) => {
 				this.desktop.logger.log("info", "Starting worker")
 
-				this.worker = new WorkerThread(pathModule.join(__dirname, !isDev ? "worker.js" : "worker.dev.js"))
+				// The worker is its own JS realm with its own SDK agent: it gets the limits at birth, then through invokes.
+				this.worker = new WorkerThread(pathModule.join(__dirname, !isDev ? "worker.js" : "worker.dev.js"), {
+					workerData: {
+						bandwidthLimits: this.desktop.bandwidthLimits
+					}
+				})
 
 				this.worker.on("error", err => {
 					this.desktop.logger.log("error", err, "worker.onError")

@@ -323,11 +323,21 @@ function sdkAgents(): https.Agent[] {
  * The main process, the worker thread and each rclone process meter separately, so their totals add up. Sync (the worker)
  * carries nearly all the traffic, which keeps that simplification harmless in practice.
  *
+ * Reaches into the SDK's internals, so an SDK release that moves them makes this fail. It then returns false instead of
+ * throwing: the app keeps working unthrottled, which beats not starting at all.
+ *
  * @export
+ * @returns {boolean} Whether the SDK's agents are now throttled.
  */
-export function installBandwidthLimiter(): void {
-	for (const agent of sdkAgents()) {
-		throttleAgent(agent, upload, download)
+export function installBandwidthLimiter(): boolean {
+	try {
+		for (const agent of sdkAgents()) {
+			throttleAgent(agent, upload, download)
+		}
+
+		return true
+	} catch {
+		return false
 	}
 }
 
