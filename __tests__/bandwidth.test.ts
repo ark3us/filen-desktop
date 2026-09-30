@@ -4,7 +4,7 @@ import https from "https"
 import { type AddressInfo } from "net"
 import { Readable } from "stream"
 import { HttpsAgent } from "agentkeepalive"
-import { generateServerCert } from "../src/lib/rclone/tls"
+import { generate } from "selfsigned"
 import { TokenBucket, throttleAgent, installBandwidthLimiter, mbpsToBytesPerSecond, toRcloneRate } from "../src/lib/bandwidth"
 
 const KiB = 1024
@@ -13,8 +13,27 @@ let server: https.Server
 let port: number
 let cert: string
 
+// Self-signed and marked as a CA, so it can be both the server's certificate and the client's trust anchor. BoringSSL
+// (Electron's TLS) refuses a plain leaf certificate as a trust anchor, unlike Node's OpenSSL.
+async function localhostCert(): Promise<{ cert: string; key: string }> {
+	const notBeforeDate = new Date()
+	const pems = await generate([{ name: "commonName", value: "localhost" }], {
+		keySize: 2048,
+		algorithm: "sha256",
+		notBeforeDate,
+		notAfterDate: new Date(notBeforeDate.getTime() + 24 * 60 * 60 * 1000),
+		extensions: [
+			{ name: "basicConstraints", cA: true },
+			{ name: "keyUsage", keyCertSign: true, digitalSignature: true, keyEncipherment: true },
+			{ name: "subjectAltName", altNames: [{ type: 2, value: "localhost" }] }
+		]
+	})
+
+	return { cert: pems.cert, key: pems.private }
+}
+
 before(async () => {
-	const pair = await generateServerCert("localhost")
+	const pair = await localhostCert()
 
 	cert = pair.cert
 	server = https.createServer({ key: pair.key, cert: pair.cert }, (req, res) => {
