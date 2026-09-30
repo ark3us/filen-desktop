@@ -10,6 +10,7 @@
 	"private": false,
 	"scripts": {
 		"lint": "eslint src",
+		"test": "tsx --test __tests__/*.test.ts",
 		"emitTypes": "tsc --emitDeclarationOnly",
 		"tsc": "tsc --build",
 		"clear": "rimraf ./dist && rimraf ./prod",

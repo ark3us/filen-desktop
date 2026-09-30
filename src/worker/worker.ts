@@ -1,5 +1,5 @@
 import { parentPort, isMainThread } from "worker_threads"
-import { type FilenDesktopConfig, type WorkerMessage, type WorkerInvokeChannel } from "../types"
+import { type FilenDesktopConfig, type WorkerMessage, type WorkerInvokeChannel, type BandwidthLimits } from "../types"
 import { serializeError, getLocalDirectorySize } from "../utils"
 import fs from "fs-extra"
 import Sync from "./sync"
@@ -7,6 +7,7 @@ import FilenSDK from "@filen/sdk"
 import { Semaphore } from "../semaphore"
 import Logger from "../lib/logger"
 import HTTP from "./http"
+import { installBandwidthLimiter, setBandwidthLimits } from "../lib/bandwidth"
 
 export class Worker {
 	public desktopConfig: FilenDesktopConfig | null = null
@@ -24,6 +25,11 @@ export class Worker {
 		this.sync = new Sync(this)
 		this.http = new HTTP(this)
 		this.logger = new Logger(false, true)
+
+		// Sync and the local HTTP server live in this thread; throttle its SDK agent before either makes a request.
+		if (!installBandwidthLimiter()) {
+			this.logger.log("error", "Could not hook the SDK's connections: the bandwidth limit will not apply to sync")
+		}
 	}
 
 	public async getSDKInstance(): Promise<FilenSDK> {
@@ -114,6 +120,10 @@ export class Worker {
 					if (this.sync.active && this.sync.sync) {
 						await this.sync.sync.updateSyncPairs(this.desktopConfig.syncConfig.syncPairs)
 					}
+
+					this.invokeResponse(message.data.id, message.data.channel)
+				} else if (message.data.channel === "setBandwidthLimits") {
+					setBandwidthLimits(message.data.data as BandwidthLimits)
 
 					this.invokeResponse(message.data.id, message.data.channel)
 				} else if (message.data.channel === "stop") {

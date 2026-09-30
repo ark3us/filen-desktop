@@ -2,7 +2,8 @@ import pathModule from "path"
 import fs from "fs-extra"
 import { type FilenSDKConfig } from "@filen/sdk"
 import { Semaphore } from "../../semaphore"
-import { type FilenDesktopConfig } from "../../types"
+import { type FilenDesktopConfig, type BandwidthLimits } from "../../types"
+import { toRcloneRate } from "../bandwidth"
 import { getLocalDirectorySize } from "../../utils"
 import { rcloneCacheDir, rcloneConfigPath, rcloneLogPath, type RcloneRole } from "./constants"
 import { ensureRcloneBinary } from "./binary"
@@ -181,6 +182,33 @@ export class RcloneManager {
 		} else {
 			this.log("info", "SDK config is not authenticated; skipping rclone config write.")
 		}
+	}
+
+	/**
+	 * Apply the bandwidth limits to every rclone role. Roles spawned from now on read them from `RCLONE_BWLIMIT`, which rclone
+	 * treats like `--bwlimit`, so they are throttled from their first byte; running roles get them through rc. Never throws: a
+	 * running role that cannot take the change keeps its previous limit, which is logged.
+	 *
+	 * @public
+	 * @async
+	 * @param {BandwidthLimits} [limits]
+	 * @returns {Promise<void>}
+	 */
+	public async setBandwidthLimits(limits?: BandwidthLimits): Promise<void> {
+		const rate = toRcloneRate(limits)
+
+		// RcloneProcess spawns with this process' environment, and nothing else here reads RCLONE_* variables.
+		process.env.RCLONE_BWLIMIT = rate
+
+		await Promise.all(
+			[this.networkDrive, this.s3, this.webdav].map(async role => {
+				try {
+					await role?.setBandwidthLimit(rate)
+				} catch (e) {
+					this.log("error", `Could not apply the bandwidth limit to rclone: ${e instanceof Error ? e.message : String(e)}`)
+				}
+			})
+		)
 	}
 
 	/**

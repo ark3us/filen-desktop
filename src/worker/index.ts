@@ -153,6 +153,10 @@ export class Worker {
 			})
 
 			this.active = true
+
+			// The worker is its own JS realm with its own SDK agent. Sent on every (re)start, before anything else is asked of
+			// it, which also covers a limit change that arrived while it was starting (and was skipped as not active yet).
+			await this.invoke("setBandwidthLimits", (await this.desktop.options.get()).bandwidthLimits)
 		} finally {
 			this.startMutex.release()
 		}

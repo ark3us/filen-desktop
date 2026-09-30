@@ -2,7 +2,8 @@ import { ipcMain, app, dialog, shell } from "electron"
 import { type FilenDesktop } from ".."
 import { PauseSignal } from "@filen/sdk"
 import { setConfig, waitForConfig } from "../config"
-import { type DriveCloudItem, type FilenDesktopConfig } from "../types"
+import { type DriveCloudItem, type FilenDesktopConfig, type BandwidthLimits } from "../types"
+import { setBandwidthLimits } from "../lib/bandwidth"
 import { type DirDownloadType } from "@filen/sdk/dist/types/api/v3/dir/download"
 import pathModule from "path"
 import fs from "fs-extra"
@@ -486,6 +487,20 @@ export class IPC {
 			await this.desktop.options.update({
 				startMinimized
 			})
+		})
+
+		ipcMain.handle("setBandwidthLimits", async (_, limits: BandwidthLimits) => {
+			setBandwidthLimits(limits)
+
+			// Saved first: a worker that is still starting reads the saved limits once it is up.
+			await this.desktop.options.update({
+				bandwidthLimits: limits
+			})
+
+			await Promise.all([
+				this.desktop.worker.active ? this.desktop.worker.invoke("setBandwidthLimits", limits) : Promise.resolve(),
+				this.desktop.rclone.setBandwidthLimits(limits)
+			])
 		})
 	}
 

@@ -10,7 +10,7 @@ import {
 	type IPCCanStartServerOnIPAndPort,
 	type IPCSelectDirectoryResult
 } from "./ipc"
-import { type FilenDesktopConfig } from "./types"
+import { type FilenDesktopConfig, type BandwidthLimits } from "./types"
 import { type SyncMode, type SyncPair } from "@filen/sync/dist/types"
 import { type DriveInfo } from "./utils"
 import { type NetworkDriveStats } from "./lib/rclone/networkDrive"
@@ -125,6 +125,7 @@ export type DesktopAPI = {
 	isPathSyncedByICloud: (path: string) => Promise<boolean>
 	setMinimizeToTray: (minimizeToTray: boolean) => Promise<void>
 	setStartMinimized: (startMinimized: boolean) => Promise<void>
+	setBandwidthLimits: (limits: BandwidthLimits) => Promise<void>
 	syncUpdateConfirmDeletion: (params: { uuid: string; result: "delete" | "restart" }) => Promise<void>
 }
 
@@ -238,6 +239,7 @@ if ((env.isBrowser || env.isElectron) && onTrustedOrigin) {
 		isPathSyncedByICloud: path => ipcRenderer.invoke("isPathSyncedByICloud", path),
 		setMinimizeToTray: minimizeToTray => ipcRenderer.invoke("setMinimizeToTray", minimizeToTray),
 		setStartMinimized: startMinimized => ipcRenderer.invoke("setStartMinimized", startMinimized),
+		setBandwidthLimits: limits => ipcRenderer.invoke("setBandwidthLimits", limits),
 		syncUpdateConfirmDeletion: params => ipcRenderer.invoke("syncUpdateConfirmDeletion", params),
 		syncUpdateRequireConfirmationOnLargeDeletions: params => ipcRenderer.invoke("syncUpdateRequireConfirmationOnLargeDeletions", params),
 		syncUpdateLargeDeletionThreshold: params => ipcRenderer.invoke("syncUpdateLargeDeletionThreshold", params)

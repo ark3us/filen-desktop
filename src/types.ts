@@ -54,10 +54,17 @@ export type FilenDesktopConfig = {
 	}
 }
 
+// Mbit/s, what speed tests report. 0 means no limit.
+export type BandwidthLimits = {
+	uploadMbps: number
+	downloadMbps: number
+}
+
 export type SyncMessage = SyncSyncMessage
 
 export type WorkerInvokeChannel =
 	| "setConfig"
+	| "setBandwidthLimits"
 	| "stop"
 	| "startSync"
 	| "stopSync"
