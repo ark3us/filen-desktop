@@ -373,6 +373,25 @@ export class S3Server {
 	}
 
 	/**
+	 * Apply a bandwidth limit to the running rclone process via rc `core/bwlimit`. A no-op when not running: the manager
+	 * applies the current limit again right after every start.
+	 *
+	 * @public
+	 * @async
+	 * @param {string} rate rclone `--bwlimit` syntax, e.g. `1465K:off`.
+	 * @returns {Promise<void>}
+	 */
+	public async setBandwidthLimit(rate: string): Promise<void> {
+		const proc = this.process
+
+		if (!proc || !proc.isRunning()) {
+			return
+		}
+
+		await proc.rc.coreBwlimit(rate)
+	}
+
+	/**
 	 * Start the S3 server. Idempotent (serialized by a start mutex; a no-op when already running).
 	 *
 	 * Steps (spec §6.3 / §9 / §10):

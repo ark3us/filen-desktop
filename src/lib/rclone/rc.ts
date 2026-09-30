@@ -160,6 +160,19 @@ export class RcClient {
 	}
 
 	/**
+	 * Set the process-wide bandwidth limit via the rc `core/bwlimit` endpoint, same syntax as `--bwlimit` (`UP:DOWN`, each side
+	 * a rate such as `1465K` or `off`). Applies to transfers already running.
+	 *
+	 * @public
+	 * @async
+	 * @param {string} rate
+	 * @returns {Promise<void>}
+	 */
+	public async coreBwlimit(rate: string): Promise<void> {
+		await this.post<unknown>("core/bwlimit", { rate })
+	}
+
+	/**
 	 * Best-effort clean shutdown via the rc `core/quit` endpoint. rclone flushes write-back, unmounts and exits, so the
 	 * connection is commonly dropped mid-response - any resulting error is swallowed since the process is terminating.
 	 *
